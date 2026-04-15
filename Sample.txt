@@ -135,8 +135,8 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # Auth
 # ---------------------------------------------------------------------------
 
-VALID_USERNAME = "INi4vdlaMnHiaCg20d"
-VALID_PASSWORD = "D$25#!7T@i$4CIn$d1a"
+VALID_USERNAME = ""
+VALID_PASSWORD = ""
 
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
