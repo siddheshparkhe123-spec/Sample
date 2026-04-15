@@ -1,73 +1,154 @@
-// STEP 2: Decode to text
-stepLoading(2);
-await sleep(500);
-
-let emailText = '';
-const fileExt = selectedFile.name.split('.').pop().toLowerCase();
-
 if(fileExt === 'pdf') {
-  // For PDF — send raw base64 directly to agent
-  // AgentBuilder can handle base64 encoded PDF content
-  emailText = base64Clean;
-  
-  // Validate it has content
-  if(!emailText || emailText.trim() === '') {
-    throw new Error('PDF appears to be empty or unreadable');
-  }
-  stepDone(2, `PDF encoded successfully (${formatBytes(selectedFile.size)})`);
+  try {
+    const binaryString = atob(base64Clean);
+    const bytes = new Uint8Array(binaryString.length);
+    for(let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
 
-} else {
-  // For TXT / DOC / EML — decode normally
-  try { 
-    emailText = atob(base64Clean); 
-  } catch(e) { 
-    emailText = base64Clean; 
+    let emailText = '';
+
+    // ── METHOD 1: Decompress FlateDecode streams ──
+    // Find all compressed stream boundaries
+    const streamMatches = [];
+    let searchPos = 0;
+    const decoder = new TextDecoder('latin1');
+
+    while(searchPos < bytes.length) {
+      // Find 'stream\r\n' or 'stream\n'
+      let streamStart = -1;
+      for(let i = searchPos; i < bytes.length - 7; i++) {
+        if(bytes[i]===115 && bytes[i+1]===116 && bytes[i+2]===114 &&
+           bytes[i+3]===101 && bytes[i+4]===97  && bytes[i+5]===109) {
+          // found 'stream'
+          streamStart = i + 6;
+          if(bytes[streamStart] === 13) streamStart++; // \r
+          if(bytes[streamStart] === 10) streamStart++; // \n
+          break;
+        }
+        searchPos++;
+      }
+      if(streamStart === -1) break;
+
+      // Find 'endstream'
+      let streamEnd = -1;
+      for(let i = streamStart; i < bytes.length - 9; i++) {
+        if(bytes[i]===101 && bytes[i+1]===110 && bytes[i+2]===100 &&
+           bytes[i+3]===115 && bytes[i+4]===116 && bytes[i+5]===114 &&
+           bytes[i+6]===101 && bytes[i+7]===97  && bytes[i+8]===109) {
+          streamEnd = i;
+          break;
+        }
+      }
+      if(streamEnd === -1) break;
+
+      const streamData = bytes.slice(streamStart, streamEnd);
+
+      // Try to decompress using DecompressionStream
+      try {
+        const ds = new DecompressionStream('deflate-raw');
+        const writer = ds.writable.getWriter();
+        const reader = ds.readable.getReader();
+
+        writer.write(streamData);
+        writer.close();
+
+        let decompressed = new Uint8Array(0);
+        while(true) {
+          const { done, value } = await reader.read();
+          if(done) break;
+          const tmp = new Uint8Array(decompressed.length + value.length);
+          tmp.set(decompressed);
+          tmp.set(value, decompressed.length);
+          decompressed = tmp;
+        }
+
+        const text = new TextDecoder('utf-8', {fatal:false})
+          .decode(decompressed);
+
+        // Extract text between BT/ET (PDF text blocks)
+        const btMatches = text.match(/BT[\s\S]*?ET/g) || [];
+        for(const block of btMatches) {
+          // Get text inside () Tj or () TJ
+          const tjMatches = block.match(/\(([^)]*)\)\s*T[jJ]/g) || [];
+          for(const m of tjMatches) {
+            const t = m.replace(/\(([^)]*)\)\s*T[jJ]/, '$1')
+              .replace(/\\n/g, '\n')
+              .replace(/\\r/g, '')
+              .replace(/\\\(/g, '(')
+              .replace(/\\\)/g, ')');
+            emailText += t + ' ';
+          }
+
+          // Also get array text [...] TJ
+          const arrMatches = block.match(/\[([^\]]*)\]\s*TJ/g) || [];
+          for(const m of arrMatches) {
+            const parts = m.match(/\(([^)]*)\)/g) || [];
+            for(const p of parts) {
+              emailText += p.replace(/[()]/g, '') + ' ';
+            }
+          }
+        }
+
+        // Also grab plain text from decompressed content
+        if(emailText.length < 50) {
+          const plainText = text
+            .replace(/[^\x20-\x7E\n\t]/g, ' ')
+            .replace(/\s{3,}/g, ' ')
+            .trim();
+          if(plainText.length > emailText.length) {
+            emailText += ' ' + plainText;
+          }
+        }
+
+      } catch(e) {
+        // Stream not compressed or decompress failed — skip
+      }
+
+      searchPos = streamEnd + 9;
+    }
+
+    // ── METHOD 2: Try uncompressed text objects ──
+    if(emailText.trim().length < 50) {
+      const rawText = decoder.decode(bytes);
+      const btBlocks = rawText.match(/BT[\s\S]*?ET/g) || [];
+      for(const block of btBlocks) {
+        const tjMatches = block.match(/\(([^)]{1,300})\)\s*T[jJ]/g) || [];
+        for(const m of tjMatches) {
+          emailText += m.replace(/\(([^)]*)\)\s*T[jJ]/, '$1') + ' ';
+        }
+      }
+    }
+
+    // ── METHOD 3: ASCII fallback ──
+    if(emailText.trim().length < 50) {
+      const rawText = decoder.decode(bytes);
+      emailText = rawText
+        .replace(/[^\x20-\x7E\n\t]/g, ' ')
+        .replace(/\/[A-Za-z]+\s*/g, ' ')
+        .replace(/\s{3,}/g, ' ')
+        .trim();
+    }
+
+    // Clean up
+    emailText = emailText
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    if(!emailText || emailText.length < 30) {
+      throw new Error(
+        'This PDF uses image-based content or heavy encryption. ' +
+        'Please save the email as .txt or .eml and upload again.'
+      );
+    }
+
+    stepDone(2, `${emailText.length} characters extracted from PDF`);
+
+  } catch(err) {
+    if(err.message.includes('Please save')) throw err;
+    throw new Error(
+      'PDF extraction failed: ' + err.message +
+      '. Please try saving as .txt or .eml instead.'
+    );
   }
-  
-  if(!emailText || emailText.trim() === '') {
-    throw new Error('Email text is empty after extraction');
-  }
-  stepDone(2, `${emailText.length} characters extracted`);
 }
-
-
-
-
-
-
-// STEP 3: Call AI Agent
-stepLoading(3);
-
-const AGENT_URL = 'https://agentbuilder8.ingenw-innovation-nonprod.deloitte.com/api/v1/prediction/89d09c98-f0c6-4c16-b04d-13fb032f8195';
-
-const fileExt = selectedFile.name.split('.').pop().toLowerCase();
-
-// Build request body based on file type
-let requestBody;
-if(fileExt === 'pdf') {
-  // Send as base64 with file type indicator
-  requestBody = JSON.stringify({
-    question: `Please process this email from a PDF document. The content is base64 encoded: ${emailText}`
-  });
-} else {
-  // Send as plain text for txt/doc/eml
-  requestBody = JSON.stringify({
-    question: emailText
-  });
-}
-
-const agentResponse = await fetch(AGENT_URL, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: requestBody
-});
-
-
-
-
-
-
-<input type="file" id="fileInput" 
-  accept=".pdf,.doc,.docx,.txt,.eml,.msg" 
-  onchange="onFileSelected(this)">
-
