@@ -1,0 +1,73 @@
+// STEP 2: Decode to text
+stepLoading(2);
+await sleep(500);
+
+let emailText = '';
+const fileExt = selectedFile.name.split('.').pop().toLowerCase();
+
+if(fileExt === 'pdf') {
+  // For PDF — send raw base64 directly to agent
+  // AgentBuilder can handle base64 encoded PDF content
+  emailText = base64Clean;
+  
+  // Validate it has content
+  if(!emailText || emailText.trim() === '') {
+    throw new Error('PDF appears to be empty or unreadable');
+  }
+  stepDone(2, `PDF encoded successfully (${formatBytes(selectedFile.size)})`);
+
+} else {
+  // For TXT / DOC / EML — decode normally
+  try { 
+    emailText = atob(base64Clean); 
+  } catch(e) { 
+    emailText = base64Clean; 
+  }
+  
+  if(!emailText || emailText.trim() === '') {
+    throw new Error('Email text is empty after extraction');
+  }
+  stepDone(2, `${emailText.length} characters extracted`);
+}
+
+
+
+
+
+
+// STEP 3: Call AI Agent
+stepLoading(3);
+
+const AGENT_URL = 'https://agentbuilder8.ingenw-innovation-nonprod.deloitte.com/api/v1/prediction/89d09c98-f0c6-4c16-b04d-13fb032f8195';
+
+const fileExt = selectedFile.name.split('.').pop().toLowerCase();
+
+// Build request body based on file type
+let requestBody;
+if(fileExt === 'pdf') {
+  // Send as base64 with file type indicator
+  requestBody = JSON.stringify({
+    question: `Please process this email from a PDF document. The content is base64 encoded: ${emailText}`
+  });
+} else {
+  // Send as plain text for txt/doc/eml
+  requestBody = JSON.stringify({
+    question: emailText
+  });
+}
+
+const agentResponse = await fetch(AGENT_URL, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: requestBody
+});
+
+
+
+
+
+
+<input type="file" id="fileInput" 
+  accept=".pdf,.doc,.docx,.txt,.eml,.msg" 
+  onchange="onFileSelected(this)">
+
