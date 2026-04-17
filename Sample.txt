@@ -1,5 +1,59 @@
-ALTER TABLE public.adm 
-ADD COLUMN IF NOT EXISTS process_type VARCHAR(50);
+-- Add to derivatives_operations
+ALTER TABLE public.derivatives_operations
+ADD COLUMN IF NOT EXISTS thread_history TEXT,
+ADD COLUMN IF NOT EXISTS reply_count INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS last_reply_at TIMESTAMP;
+
+-- Add to treasury_documentation  
+ALTER TABLE public.treasury_documentation
+ADD COLUMN IF NOT EXISTS thread_history TEXT,
+ADD COLUMN IF NOT EXISTS reply_count INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS last_reply_at TIMESTAMP;
+
+
+
+
+
+
+
+SELECT * FROM public.derivatives_operations 
+WHERE case_id = '{{this.params.case_id}}'
+UNION ALL
+SELECT * FROM public.treasury_documentation
+WHERE case_id = '{{this.params.case_id}}';
+
+
+
+
+
+UPDATE public.derivatives_operations SET
+  holding_reply  = '{{this.params.holding_reply}}',
+  forward_reply  = '{{this.params.forward_reply}}',
+  thread_history = '{{this.params.thread_history}}',
+  reply_count    = reply_count + 1,
+  last_reply_at  = NOW(),
+  status         = '{{this.params.status}}'
+WHERE case_id = '{{this.params.case_id}}';
+
+
+
+
+
+
+UPDATE public.treasury_documentation SET
+  holding_reply  = '{{this.params.holding_reply}}',
+  forward_reply  = '{{this.params.forward_reply}}',
+  thread_history = '{{this.params.thread_history}}',
+  reply_count    = reply_count + 1,
+  last_reply_at  = NOW(),
+  status         = '{{this.params.status}}'
+WHERE case_id = '{{this.params.case_id}}';
+
+
+
+
+
+
 
 
 export default {
@@ -9,81 +63,148 @@ export default {
 
     try {
 
-      if(team.includes('treasury') || team.includes('gts')) {
+      // ── CHECK IF THIS IS A REPLY TO EXISTING CASE ──
+      const isReply        = payload.is_reply === true || 
+                             payload.is_reply === 'true';
+      const originalCaseId = payload.original_case_id || '';
 
-        // ── Generate reference number ──
-        const now   = new Date();
-        const yy    = now.getFullYear();
-        const mm    = String(now.getMonth()+1).padStart(2,'0');
-        const dd    = String(now.getDate()).padStart(2,'0');
-        const rand  = Math.floor(10000 + Math.random() * 90000);
-        const refNo = `GTS-REF-${yy}${mm}${dd}-${rand}`;
+      if(isReply && originalCaseId) {
+        // ── REPLY FLOW: Update existing case ──
+        console.log('Reply detected for case:', originalCaseId);
 
-        // ── Map intent to process type ──
-        const intent      = (payload.intent || '').toLowerCase();
-        let processType   = 'General';
+        // Fetch the existing case to get thread history
+        const existingCases = await fetch_case_by_id.run({
+          case_id: originalCaseId
+        });
 
-        if(intent.includes('invocation') || intent.includes('invoke')) {
-          processType = 'Invocation';
-        } else if(intent.includes('cancellation') || intent.includes('cancel')) {
-          processType = 'Cancellation';
-        } else if(intent.includes('extension') || intent.includes('extend')) {
-          processType = 'Extension';
-        } else if(intent.includes('submission') || intent.includes('submit')) {
-          processType = 'Guarantee Submission';
-        } else if(intent.includes('claim')) {
-          processType = 'Claim';
-        } else if(intent.includes('bank guarantee')) {
-          processType = 'Guarantee Submission';
+        const existingCase = existingCases[0] || {};
+        const existingTeam = (existingCase.team || '').toLowerCase();
+
+        // Build thread history
+        const timestamp = new Date().toLocaleString();
+        const newThread = `\n\n--- Reply received on ${timestamp} ---\n${payload.summary || ''}`;
+        const threadHistory = (existingCase.thread_history || '') + newThread;
+
+        // Update the correct table
+        if(existingTeam.includes('treasury') || 
+           existingTeam.includes('gts') ||
+           team.includes('treasury') || 
+           team.includes('gts')) {
+
+          await update_treasury_reply.run({
+            case_id:       originalCaseId,
+            holding_reply: payload.holding_reply,
+            forward_reply: payload.forward_reply,
+            thread_history: threadHistory,
+            status:        payload.status || existingCase.status || 'open'
+          });
+
+        } else {
+          await update_derivatives_reply.run({
+            case_id:       originalCaseId,
+            holding_reply: payload.holding_reply,
+            forward_reply: payload.forward_reply,
+            thread_history: threadHistory,
+            status:        payload.status || existingCase.status || 'open'
+          });
         }
 
-        // ── Append reference number to forward_reply ──
-        const updatedForwardReply =
-          (payload.forward_reply || '') +
-          `\n\nReference Number: ${refNo}` +
-          `\nProcess Type: ${processType}` +
-          `\nPlease quote this reference in all correspondence.`;
-
-        // ── Insert into GTS team table ──
-        await insert_treasury_documentation.run({
-          case_id:       payload.case_id,
-          intent:        payload.intent,
-          team:          payload.team,
-          summary:       payload.summary,
-          reason:        payload.reason,
-          holding_reply: payload.holding_reply,
-          forward_reply: updatedForwardReply,
-          confidence:    payload.confidence,
-          status:        payload.status
-        });
-
-        // ── Insert into adm table ──
-        await insert_adm.run({
-          reference_number: refNo,
-          case_id:          payload.case_id,
-          process_type:     processType
-        });
-
       } else {
-        // ── Derivatives — no adm entry ──
-        await insert_derivatives_operations.run({
-          case_id:       payload.case_id,
-          intent:        payload.intent,
-          team:          payload.team,
-          summary:       payload.summary,
-          reason:        payload.reason,
-          holding_reply: payload.holding_reply,
-          forward_reply: payload.forward_reply,
-          confidence:    payload.confidence,
-          status:        payload.status
-        });
+        // ── NEW CASE FLOW: Insert as fresh case ──
+
+        if(team.includes('treasury') || team.includes('gts')) {
+
+          // Generate reference number for GTS
+          const now   = new Date();
+          const yy    = now.getFullYear();
+          const mm    = String(now.getMonth()+1).padStart(2,'0');
+          const dd    = String(now.getDate()).padStart(2,'0');
+          const rand  = Math.floor(10000 + Math.random() * 90000);
+          const refNo = `GTS-REF-${yy}${mm}${dd}-${rand}`;
+
+          // Map intent to process type
+          const intent    = (payload.intent || '').toLowerCase();
+          let processType = 'General';
+          if(intent.includes('invocation') || intent.includes('invoke'))
+            processType = 'Invocation';
+          else if(intent.includes('cancellation') || intent.includes('cancel'))
+            processType = 'Cancellation';
+          else if(intent.includes('extension') || intent.includes('extend'))
+            processType = 'Extension';
+          else if(intent.includes('submission') || intent.includes('submit'))
+            processType = 'Guarantee Submission';
+          else if(intent.includes('claim'))
+            processType = 'Claim';
+          else if(intent.includes('bank guarantee'))
+            processType = 'Guarantee Submission';
+
+          // Append ref number to forward reply
+          const updatedForwardReply =
+            (payload.forward_reply || '') +
+            `\n\nReference Number: ${refNo}` +
+            `\nProcess Type: ${processType}` +
+            `\nPlease quote this reference in all correspondence.`;
+
+          await insert_treasury_documentation.run({
+            case_id:       payload.case_id,
+            intent:        payload.intent,
+            team:          payload.team,
+            summary:       payload.summary,
+            reason:        payload.reason,
+            holding_reply: payload.holding_reply,
+            forward_reply: updatedForwardReply,
+            confidence:    payload.confidence,
+            status:        payload.status
+          });
+
+          await insert_adm.run({
+            reference_number: refNo,
+            case_id:          payload.case_id,
+            process_type:     processType
+          });
+
+        } else {
+          await insert_derivatives_operations.run({
+            case_id:       payload.case_id,
+            intent:        payload.intent,
+            team:          payload.team,
+            summary:       payload.summary,
+            reason:        payload.reason,
+            holding_reply: payload.holding_reply,
+            forward_reply: payload.forward_reply,
+            confidence:    payload.confidence,
+            status:        payload.status
+          });
+        }
       }
 
+      // Refresh both tables
       await fetch_derivatives_operations.run();
       await fetch_treasury_documentation.run();
 
     } catch(err) {
-      console.error('Insert failed:', err);
+      console.error('Insert/Update failed:', err);
     }
   }
 };
+
+
+
+
+
+
+
+
+
+${(c.reply_count > 0) ? 
+  `<span style="background:rgba(79,124,255,0.15);color:#7da4ff;
+   font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:99px;
+   flex-shrink:0">💬 ${c.reply_count} ${c.reply_count===1?'reply':'replies'}</span>` 
+  : ''}
+
+
+
+
+
+
+
