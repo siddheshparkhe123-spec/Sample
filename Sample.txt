@@ -1,49 +1,9 @@
-----------------------------------------
-### 🔄 REPLY THREAD DETECTION (VERY IMPORTANT)
-
-Before processing, check if this email is a REPLY 
-to an existing case:
-
-Signs this is a reply email:
-- Subject starts with "Re:" or "RE:"
-- Body contains a previous email quoted below 
-  (lines starting with ">")
-- Body contains "Case ref:" or "CASE-" number
-- Body contains "Thank you for your email" 
-  (our previous holding reply)
-- Sender is replying to an HSBC triage response
-
-IF this is a reply email:
-1. Extract the CASE ID from the email 
-   (look for "Case ref: CASE-XXXXX" pattern)
-2. Set "is_reply": true in output
-3. Set "original_case_id": "CASE-XXXXX"
-4. Generate new holding_reply addressing the 
-   new content in the reply
-5. Generate new forward_reply to team with 
-   update on case
-
-IF this is a NEW email (not a reply):
-1. Set "is_reply": false
-2. Set "original_case_id": ""
-3. Generate new case_id
-4. Process normally
-
-----------------------------------------
-### 📋 UPDATED OUTPUT FORMAT
-
-Return ONLY this JSON:
-{
-  "is_reply": false,
-  "original_case_id": "",
-  "case_id": "CASE-<random 5 digit>",
-  "intent": "",
-  "team": "",
-  "summary": "",
-  "reason": "",
-  "holding_reply": "",
-  "forward_reply": "",
-  "sentiment": "",
-  "confidence": 90,
-  "status": ""
-}
+From:
+To:
+Re:
+Date:
+HSBC Email Triage System < triage com›
+Customer / Sender
+Bank Guarantee Cancellation • CASE-52784
+4/17/2026, 5:50:47 PM
+Dear Sir/Madam, Thank you for your email. We have received the copy of the Bank Guarantee and the accompanying discharge letter for cancellation. Our team will review the documents and proceed with the necessary actions. Case ref: CASE-52784. Regards, HSBC Email Triage Team
