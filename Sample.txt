@@ -1,15 +1,94 @@
-RUN --mount=type=secret,id=auth,target=/etc/apt/auth.conf \
-    apt update --fix-missing -y || true \
-    && apt-get install -y --no-install-recommends \
-        python3.12 \
-        python3.12-venv \
-        curl \
-    && apt-get install -y --only-upgrade \
-        libgcrypt20 \
-        libexpat1 \
-        tar \
-        passwd \
-        login \
-        python3.12 \
-        python3.12-minimal \
-    && apt-get upgrade -y libc6 \
+CREATE TABLE IF NOT EXISTS public.adm (
+  id SERIAL PRIMARY KEY,
+  date TIMESTAMP DEFAULT NOW(),
+  reference_number VARCHAR(50),
+  case_id VARCHAR(50)
+);
+
+
+
+INSERT INTO public.adm (
+  date,
+  reference_number,
+  case_id
+)
+VALUES (
+  NOW(),
+  '{{this.params.reference_number}}',
+  '{{this.params.case_id}}'
+);
+
+
+
+
+
+
+
+export default {
+  async OnInsertCase() {
+    const payload = Custom3.model.insert_payload;
+    const team    = (Custom3.model.insert_team || '').toLowerCase();
+
+    try {
+
+      if(team.includes('treasury') || team.includes('gts')) {
+        // ── Generate reference number for GTS ──
+        // Format: GTS-REF-YYYYMMDD-XXXXX (date + random 5 digits)
+        const now    = new Date();
+        const yy     = now.getFullYear();
+        const mm     = String(now.getMonth()+1).padStart(2,'0');
+        const dd     = String(now.getDate()).padStart(2,'0');
+        const rand   = Math.floor(10000 + Math.random() * 90000);
+        const refNo  = `GTS-REF-${yy}${mm}${dd}-${rand}`;
+
+        // ── Append reference number to forward_reply ──
+        const updatedForwardReply =
+          (payload.forward_reply || '') +
+          `\n\nReference Number: ${refNo}\nPlease quote this reference in all correspondence.`;
+
+        // ── Insert into GTS team table ──
+        await insert_treasury_documentation.run({
+          case_id:       payload.case_id,
+          intent:        payload.intent,
+          team:          payload.team,
+          summary:       payload.summary,
+          reason:        payload.reason,
+          holding_reply: payload.holding_reply,
+          forward_reply: updatedForwardReply,
+          confidence:    payload.confidence,
+          status:        payload.status
+        });
+
+        // ── Insert into adm table ──
+        await insert_adm.run({
+          reference_number: refNo,
+          case_id:          payload.case_id
+        });
+
+      } else {
+        // ── Derivatives Operations — no adm entry needed ──
+        await insert_derivatives_operations.run({
+          case_id:       payload.case_id,
+          intent:        payload.intent,
+          team:          payload.team,
+          summary:       payload.summary,
+          reason:        payload.reason,
+          holding_reply: payload.holding_reply,
+          forward_reply: payload.forward_reply,
+          confidence:    payload.confidence,
+          status:        payload.status
+        });
+      }
+
+      // ── Refresh both tables ──
+      await fetch_derivatives_operations.run();
+      await fetch_treasury_documentation.run();
+
+    } catch(err) {
+      console.error('Insert failed:', err);
+    }
+  }
+};
+
+
+
