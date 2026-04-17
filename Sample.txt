@@ -1,27 +1,5 @@
-CREATE TABLE IF NOT EXISTS public.adm (
-  id SERIAL PRIMARY KEY,
-  date TIMESTAMP DEFAULT NOW(),
-  reference_number VARCHAR(50),
-  case_id VARCHAR(50)
-);
-
-
-
-INSERT INTO public.adm (
-  date,
-  reference_number,
-  case_id
-)
-VALUES (
-  NOW(),
-  '{{this.params.reference_number}}',
-  '{{this.params.case_id}}'
-);
-
-
-
-
-
+ALTER TABLE public.adm 
+ADD COLUMN IF NOT EXISTS process_type VARCHAR(50);
 
 
 export default {
@@ -32,19 +10,39 @@ export default {
     try {
 
       if(team.includes('treasury') || team.includes('gts')) {
-        // ── Generate reference number for GTS ──
-        // Format: GTS-REF-YYYYMMDD-XXXXX (date + random 5 digits)
-        const now    = new Date();
-        const yy     = now.getFullYear();
-        const mm     = String(now.getMonth()+1).padStart(2,'0');
-        const dd     = String(now.getDate()).padStart(2,'0');
-        const rand   = Math.floor(10000 + Math.random() * 90000);
-        const refNo  = `GTS-REF-${yy}${mm}${dd}-${rand}`;
+
+        // ── Generate reference number ──
+        const now   = new Date();
+        const yy    = now.getFullYear();
+        const mm    = String(now.getMonth()+1).padStart(2,'0');
+        const dd    = String(now.getDate()).padStart(2,'0');
+        const rand  = Math.floor(10000 + Math.random() * 90000);
+        const refNo = `GTS-REF-${yy}${mm}${dd}-${rand}`;
+
+        // ── Map intent to process type ──
+        const intent      = (payload.intent || '').toLowerCase();
+        let processType   = 'General';
+
+        if(intent.includes('invocation') || intent.includes('invoke')) {
+          processType = 'Invocation';
+        } else if(intent.includes('cancellation') || intent.includes('cancel')) {
+          processType = 'Cancellation';
+        } else if(intent.includes('extension') || intent.includes('extend')) {
+          processType = 'Extension';
+        } else if(intent.includes('submission') || intent.includes('submit')) {
+          processType = 'Guarantee Submission';
+        } else if(intent.includes('claim')) {
+          processType = 'Claim';
+        } else if(intent.includes('bank guarantee')) {
+          processType = 'Guarantee Submission';
+        }
 
         // ── Append reference number to forward_reply ──
         const updatedForwardReply =
           (payload.forward_reply || '') +
-          `\n\nReference Number: ${refNo}\nPlease quote this reference in all correspondence.`;
+          `\n\nReference Number: ${refNo}` +
+          `\nProcess Type: ${processType}` +
+          `\nPlease quote this reference in all correspondence.`;
 
         // ── Insert into GTS team table ──
         await insert_treasury_documentation.run({
@@ -62,11 +60,12 @@ export default {
         // ── Insert into adm table ──
         await insert_adm.run({
           reference_number: refNo,
-          case_id:          payload.case_id
+          case_id:          payload.case_id,
+          process_type:     processType
         });
 
       } else {
-        // ── Derivatives Operations — no adm entry needed ──
+        // ── Derivatives — no adm entry ──
         await insert_derivatives_operations.run({
           case_id:       payload.case_id,
           intent:        payload.intent,
@@ -80,7 +79,6 @@ export default {
         });
       }
 
-      // ── Refresh both tables ──
       await fetch_derivatives_operations.run();
       await fetch_treasury_documentation.run();
 
@@ -89,6 +87,3 @@ export default {
     }
   }
 };
-
-
-
