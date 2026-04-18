@@ -25,3 +25,10 @@ VALUES
 ('DRF-2026-008','EFG Limited','accounts@efglimited.com','2026-03-30','cancelled','DEAL-30033');
 
 
+
+
+
+SELECT * FROM public.ot
+ORDER BY created_at DESC;
+
+
