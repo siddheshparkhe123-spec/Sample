@@ -1,3 +1,49 @@
+  "customer_details_mail": ""
+}
+
+
+- customer_details_mail → ONLY populate when intent is 
+  "Net Outstanding Request".
+  Draft a complete professional email to send to the 
+  customer providing their net outstanding position.
+  
+  The email will include deal details passed to you.
+  Format it as a ready-to-send email body.
+  
+  Guidelines:
+  - Start with "Dear [customer name],"
+  - Acknowledge their request
+  - State "Please find below your net outstanding 
+    position as on [today's date]:"
+  - List all deal details clearly
+  - End with professional sign off:
+    "Best regards,
+     Derivatives Operations INM
+     HSBC India"
+  
+  If intent is NOT Net Outstanding Request → 
+  return empty string ""
+
+
+
+
+
+
+- "Net Outstanding Request" → customer asking for 
+  net outstanding position, AE gains, outstanding 
+  deals, current position, reconciliation statement.
+  
+  When this intent is detected, the system will 
+  fetch the customer's deal records from database 
+  and pass them back. You will then draft the 
+  customer_details_mail with those records included.
+  
+  For now draft the email acknowledging the request 
+  and stating records will be included.
+
+
+
+
 export default {
 
   // ── MAIN: Handle new case insert OR reply update ──
@@ -141,6 +187,8 @@ export default {
   },
 
   // ── NET OUTSTANDING: Fetch OT records + build draft ──
+  // No second agent call — agent already drafted
+  // customer_details_mail in first response
   async handleNetOutstanding(payload) {
     try {
       // 1. Insert case into derivatives as pending
@@ -161,49 +209,53 @@ export default {
       const customerName  = payload.customer_name  ||
                             payload.sender_name    || '';
 
-      // 3. Fetch OT records for this customer
+      // 3. Fetch OT records for this customer from DB
       const otRecords = await fetch_ot_by_customer.run({
         customer_email: customerEmail,
         customer_name:  customerName
       });
 
-      // 4. Build OT summary for agent
-      const otSummary = (otRecords || []).map(r =>
-        `Deal Reference ID: ${r.deal_reference_id || '—'}` +
-        ` | Name: ${r.name || '—'}` +
-        ` | Email: ${r.mail || '—'}` +
-        ` | Deal Date: ${r.deal_date || '—'}` +
-        ` | Deal Status: ${r.deal_status || '—'}` +
-        ` | Dealing Number: ${r.dealing_number || '—'}`
+      // 4. Build formatted OT deal details to append
+      const otSummary = (otRecords || []).map((r, i) =>
+        `\nDeal ${i + 1}:` +
+        `\n  Reference ID   : ${r.deal_reference_id || '—'}` +
+        `\n  Name           : ${r.name              || '—'}` +
+        `\n  Deal Date      : ${r.deal_date          || '—'}` +
+        `\n  Deal Status    : ${r.deal_status        || '—'}` +
+        `\n  Dealing Number : ${r.dealing_number     || '—'}`
       ).join('\n');
 
-      // 5. Call agent to draft the net outstanding email
-      const AGENT_URL = 'https://agentbuilder8.ingenw-innovation-nonprod.deloitte.com/api/v1/prediction/89d09c98-f0c6-4c16-b04d-13fb032f8195';
-
-      const agentResp = await fetch(AGENT_URL, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question:
-            `Draft a professional net outstanding position ` +
-            `email to ${customerName} (${customerEmail}). ` +
-            `Case ID: ${payload.case_id}. ` +
-            `Their outstanding deals are:\n${otSummary}\n\n` +
-            `Include all deal details clearly. ` +
-            `Sign off as Derivatives Operations INM, HSBC. ` +
-            `Return ONLY the email body. No subject. No JSON.`
-        })
-      });
-
-      const agentResult = await agentResp.json();
-      const draftEmail  = agentResult.text || '';
+      // 5. Use agent drafted mail — no second agent call needed
+      // Agent returns customer_details_mail in first response
+      // We just append the real DB deal records to it
+      const baseDraft  = payload.customer_details_mail || '';
+      const finalDraft = baseDraft
+        ? baseDraft +
+          `\n\n--- Your Outstanding Deal Details ---` +
+          otSummary +
+          `\n\nShould you have any queries regarding the above,` +
+          ` please do not hesitate to contact us.` +
+          `\n\nBest regards,` +
+          `\nDerivatives Operations INM` +
+          `\nHSBC India`
+        : `Dear ${customerName},` +
+          `\n\nThank you for reaching out to HSBC Derivatives` +
+          ` Operations INM.` +
+          `\n\nPlease find below your net outstanding position` +
+          ` as on today's date:` +
+          otSummary +
+          `\n\nShould you have any queries, please do not` +
+          ` hesitate to contact us.` +
+          `\n\nBest regards,` +
+          `\nDerivatives Operations INM` +
+          `\nHSBC India`;
 
       // 6. Save draft to ot_drafts table
       await insert_ot_draft.run({
         case_id:        payload.case_id,
         customer_name:  customerName,
         customer_email: customerEmail,
-        draft_email:    draftEmail,
+        draft_email:    finalDraft,
         ot_records:     JSON.stringify(otRecords || [])
       });
 
@@ -217,42 +269,6 @@ export default {
     }
   }
 
-};
-
-
-
-
-
-
-
-export default {
-  async OnSendDraft() {
-    const payload = Custom3.model.send_draft_payload;
-    if(!payload) return;
-
-    try {
-      const caseId = payload.case_id;
-
-      // 1. Update case status to closed in derivatives table
-      await update_case_status_closed.run({
-        case_id: caseId,
-        status:  'closed'
-      });
-
-      // 2. Delete draft from ot_drafts table
-      await delete_ot_draft.run({
-        case_id: caseId
-      });
-
-      // 3. Refresh all data
-      await fetch_derivatives_operations.run();
-      await fetch_treasury_documentation.run();
-      await fetch_ot_drafts.run();
-
-    } catch(err) {
-      console.error('OnSendDraft failed:', err);
-    }
-  }
 };
 
 
