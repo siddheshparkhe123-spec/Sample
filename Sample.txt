@@ -1,34 +1,75 @@
-CREATE TABLE IF NOT EXISTS public.ot (
-  id                SERIAL PRIMARY KEY,
-  deal_reference_id VARCHAR(50),
-  name              VARCHAR(100),
-  mail              VARCHAR(150),
-  deal_date         DATE,
-  deal_status       VARCHAR(30) DEFAULT 'open',
-  dealing_number    VARCHAR(50),
-  created_at        TIMESTAMP DEFAULT NOW()
-);
+"confidence": "",
+"customer_name": "",
+"customer_email": ""
+}
+- customer_name  → Extract sender's full name or company 
+                   name from "From" field or email signature.
+                   Example: "ABC Corporation"
+                   If not found return empty string.
 
-
-INSERT INTO public.ot (
-  deal_reference_id, name, mail, 
-  deal_date, deal_status, dealing_number
-)
-VALUES
-('DRF-2026-001','ABC Corporation','treasury@abccorp.com','2026-01-10','open','DEAL-10011'),
-('DRF-2026-002','ABC Corporation','treasury@abccorp.com','2026-02-14','pending','DEAL-10012'),
-('DRF-2026-003','ABC Corporation','treasury@abccorp.com','2026-03-20','open','DEAL-10013'),
-('DRF-2026-004','BCD Enterprises','finance@bcdenterprises.com','2026-01-22','open','DEAL-20021'),
-('DRF-2026-005','BCD Enterprises','finance@bcdenterprises.com','2026-02-28','settled','DEAL-20022'),
-('DRF-2026-006','EFG Limited','accounts@efglimited.com','2026-01-05','open','DEAL-30031'),
-('DRF-2026-007','EFG Limited','accounts@efglimited.com','2026-02-18','pending','DEAL-30032'),
-('DRF-2026-008','EFG Limited','accounts@efglimited.com','2026-03-30','cancelled','DEAL-30033');
+- customer_email → Extract sender's email address from 
+                   the "From" field.
+                   Example: "treasury@abccorp.com"
+                   If not found return empty string.
 
 
 
 
+- "AE Gains Request" → requesting outstanding AE gains
 
-SELECT * FROM public.ot
-ORDER BY created_at DESC;
+- "Net Outstanding Request" → customer asking for net 
+  outstanding position, outstanding deals, current 
+  position statement, deal summary, reconciliation.
+  Keywords: "net outstanding", "outstanding position",
+  "AE gains as on date", "outstanding as on date",
+  "deal summary", "current position", "reconciliation"
+
+
+
+- For Net Outstanding Request: if customer email is 
+  clearly identifiable in From field = 90
+  If email is vague with no sender details = 50
+
+
+
+
+
+
+CUSTOMER EXTRACTION CHECK:
+- Always extract customer_name and customer_email 
+  from every email regardless of intent
+- For Net Outstanding Request: these fields are 
+  MANDATORY — do not leave empty
+- Check From field first, then email signature
+
+
+
+
+
+
+
+
+
+From: ABC Corporation <treasury@abccorp.com>
+Sent: Thursday, April 17, 2026 11:30 AM
+To: Derivatives Operations INM <derivativesoperations>
+Cc: accounts@abccorp.com
+Subject: EXTERNAL: Request for Net Outstanding Position as on date
+
+Dear Derivatives Operations INM Team,
+
+Hope this email finds you well.
+
+We would like to request the net outstanding position for our account as on today's date.
+
+Kindly share the details of all our outstanding deals including deal reference numbers, deal dates, current status and dealing numbers at the earliest.
+
+This is required for our internal reconciliation and reporting purposes.
+
+Regards,
+ABC Corporation
+Treasury Department
+treasury@abccorp.co
+
 
 
