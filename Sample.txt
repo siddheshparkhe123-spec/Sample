@@ -1,0 +1,334 @@
+export default {
+
+  // ── MAIN: Handle new case insert OR reply update ──
+  async OnInsertCase() {
+    const payload = Custom3.model.insert_payload;
+    const team    = (Custom3.model.insert_team || '').toLowerCase();
+
+    try {
+      const isReply        = payload.is_reply === true || 
+                             payload.is_reply === 'true';
+      const originalCaseId = payload.original_case_id || '';
+      const intent         = (payload.intent || '').toLowerCase();
+
+      // ── NET OUTSTANDING REQUEST → Create Draft ──
+      if(intent.includes('net outstanding') || 
+         intent.includes('outstanding position') ||
+         intent.includes('ae gains')) {
+        await this.handleNetOutstanding(payload);
+        return;
+      }
+
+      if(isReply && originalCaseId) {
+        // ── REPLY: Update existing case ──
+        const existing     = await fetch_case_by_id.run({ 
+          case_id: originalCaseId 
+        });
+        const existingCase = existing[0] || {};
+        const existingTeam = (existingCase.team || '').toLowerCase();
+        const timestamp    = new Date().toLocaleString();
+
+        // Preserve original forward reply (keeps ref number)
+        const updatedForwardReply =
+          (existingCase.forward_reply || '') +
+          `\n\n--- Update received on ${timestamp} ---\n` +
+          (payload.forward_reply || '');
+
+        const threadHistory =
+          (existingCase.thread_history || '') +
+          `\n\n--- Reply received on ${timestamp} ---\n` +
+          (payload.summary || '');
+
+        if(existingTeam.includes('treasury') || 
+           existingTeam.includes('gts') ||
+           team.includes('treasury') || 
+           team.includes('gts')) {
+          await update_treasury_reply.run({
+            case_id:        originalCaseId,
+            holding_reply:  payload.holding_reply,
+            forward_reply:  updatedForwardReply,
+            thread_history: threadHistory,
+            status:         payload.status || 
+                            existingCase.status || 'open'
+          });
+        } else {
+          await update_derivatives_reply.run({
+            case_id:        originalCaseId,
+            holding_reply:  payload.holding_reply,
+            forward_reply:  updatedForwardReply,
+            thread_history: threadHistory,
+            status:         payload.status || 
+                            existingCase.status || 'open'
+          });
+        }
+
+      } else {
+        // ── NEW CASE INSERT ──
+        if(team.includes('treasury') || team.includes('gts')) {
+
+          // Generate GTS reference number
+          const now   = new Date();
+          const yy    = now.getFullYear();
+          const mm    = String(now.getMonth()+1).padStart(2,'0');
+          const dd    = String(now.getDate()).padStart(2,'0');
+          const rand  = Math.floor(10000 + Math.random() * 90000);
+          const refNo = `GTS-REF-${yy}${mm}${dd}-${rand}`;
+
+          // Map intent to process type
+          let processType = 'General';
+          if(intent.includes('invocation') || 
+             intent.includes('invoke'))
+            processType = 'Invocation';
+          else if(intent.includes('cancellation') || 
+                  intent.includes('cancel'))
+            processType = 'Cancellation';
+          else if(intent.includes('extension') || 
+                  intent.includes('extend'))
+            processType = 'Extension';
+          else if(intent.includes('submission') || 
+                  intent.includes('submit'))
+            processType = 'Guarantee Submission';
+          else if(intent.includes('claim'))
+            processType = 'Claim';
+
+          const updatedForwardReply =
+            (payload.forward_reply || '') +
+            `\n\nReference Number: ${refNo}` +
+            `\nProcess Type: ${processType}` +
+            `\nPlease quote this reference in all correspondence.`;
+
+          await insert_treasury_documentation.run({
+            case_id:       payload.case_id,
+            intent:        payload.intent,
+            team:          payload.team,
+            summary:       payload.summary,
+            reason:        payload.reason,
+            holding_reply: payload.holding_reply,
+            forward_reply: updatedForwardReply,
+            confidence:    payload.confidence,
+            status:        payload.status
+          });
+
+          await insert_adm.run({
+            reference_number: refNo,
+            case_id:          payload.case_id,
+            process_type:     processType
+          });
+
+        } else {
+          // Derivatives — normal insert
+          await insert_derivatives_operations.run({
+            case_id:       payload.case_id,
+            intent:        payload.intent,
+            team:          payload.team,
+            summary:       payload.summary,
+            reason:        payload.reason,
+            holding_reply: payload.holding_reply,
+            forward_reply: payload.forward_reply,
+            confidence:    payload.confidence,
+            status:        payload.status
+          });
+        }
+      }
+
+      // Refresh both tables
+      await fetch_derivatives_operations.run();
+      await fetch_treasury_documentation.run();
+
+    } catch(err) {
+      console.error('OnInsertCase failed:', err);
+    }
+  },
+
+  // ── NET OUTSTANDING: Fetch OT records + build draft ──
+  async handleNetOutstanding(payload) {
+    try {
+      // 1. Insert case into derivatives as pending
+      await insert_derivatives_operations.run({
+        case_id:       payload.case_id,
+        intent:        payload.intent,
+        team:          payload.team,
+        summary:       payload.summary,
+        reason:        payload.reason,
+        holding_reply: payload.holding_reply,
+        forward_reply: payload.forward_reply,
+        confidence:    payload.confidence,
+        status:        'pending'
+      });
+
+      // 2. Extract customer details from agent payload
+      const customerEmail = payload.customer_email || '';
+      const customerName  = payload.customer_name  || 
+                            payload.sender_name    || '';
+
+      // 3. Fetch OT records for this customer from DB
+      // Uses fetch_ot_by_customer query
+      const otRecords = await fetch_ot_by_customer.run({
+        customer_email: customerEmail,
+        customer_name:  customerName
+      });
+
+      // 4. Build OT summary string for agent to draft email
+      const otSummary = (otRecords || []).map(r =>
+        `Deal Reference ID: ${r.deal_reference_id || '—'}` +
+        ` | Name: ${r.name || '—'}` +
+        ` | Email: ${r.mail || '—'}` +
+        ` | Deal Date: ${r.deal_date || '—'}` +
+        ` | Deal Status: ${r.deal_status || '—'}` +
+        ` | Dealing Number: ${r.dealing_number || '—'}`
+      ).join('\n');
+
+      // 5. Call agent to draft the net outstanding email
+      const AGENT_URL = 'https://agentbuilder8.ingenw-innovation-nonprod.deloitte.com/api/v1/prediction/89d09c98-f0c6-4c16-b04d-13fb032f8195';
+
+      const agentResp = await fetch(AGENT_URL, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question:
+            `Draft a professional net outstanding position email ` +
+            `to ${customerName} (${customerEmail}). ` +
+            `Case ID: ${payload.case_id}. ` +
+            `Their outstanding deals from our records are:\n` +
+            `${otSummary}\n\n` +
+            `Include all deal details in a clear format. ` +
+            `Sign off as Derivatives Operations INM, HSBC. ` +
+            `Return ONLY the email body text. No subject line. No JSON.`
+        })
+      });
+
+      const agentResult = await agentResp.json();
+      const draftEmail  = agentResult.text || agentResult || '';
+
+      // 6. Push draft into model so HTML widget shows it in Drafts folder
+      const currentDrafts = fetch_ot_drafts.data || [];
+
+      const newDraft = {
+        case_id:        payload.case_id,
+        customer_name:  customerName,
+        customer_email: customerEmail,
+        draft_email:    draftEmail,
+        ot_records:     otRecords || [],
+        created_at:     new Date().toISOString()
+      };
+
+      // Store draft in DB so it persists across sessions
+      await insert_ot_draft.run({
+        case_id:        payload.case_id,
+        customer_name:  customerName,
+        customer_email: customerEmail,
+        draft_email:    draftEmail,
+        ot_records:     JSON.stringify(otRecords || [])
+      });
+
+      // Refresh all data
+      await fetch_derivatives_operations.run();
+      await fetch_treasury_documentation.run();
+      await fetch_ot_drafts.run();
+
+    } catch(err) {
+      console.error('handleNetOutstanding failed:', err);
+    }
+  },
+
+  // ── SEND DRAFT: User clicks Send → close case ──
+  async OnSendDraft() {
+    const payload = Custom3.model.send_draft_payload;
+    if(!payload) return;
+
+    try {
+      const caseId = payload.case_id;
+
+      // 1. Update case status to closed
+      await update_case_status_closed.run({
+        case_id: caseId,
+        status:  'closed'
+      });
+
+      // 2. Delete draft from ot_drafts table
+      await delete_ot_draft.run({
+        case_id: caseId
+      });
+
+      // 3. Refresh all data
+      await fetch_derivatives_operations.run();
+      await fetch_treasury_documentation.run();
+      await fetch_ot_drafts.run();
+
+    } catch(err) {
+      console.error('OnSendDraft failed:', err);
+    }
+  }
+
+};
+
+
+SELECT * FROM public.ot
+WHERE LOWER(mail) = LOWER('{{this.params.customer_email}}')
+   OR LOWER(name) LIKE LOWER('%{{this.params.customer_name}}%')
+ORDER BY deal_date DESC;
+
+
+
+
+INSERT INTO public.ot_drafts (
+  case_id, customer_name, customer_email,
+  draft_email, ot_records, created_at
+)
+VALUES (
+  '{{this.params.case_id}}',
+  '{{this.params.customer_name}}',
+  '{{this.params.customer_email}}',
+  '{{this.params.draft_email}}',
+  '{{this.params.ot_records}}',
+  NOW()
+);
+
+
+
+DELETE FROM public.ot_drafts
+WHERE case_id = '{{this.params.case_id}}';
+
+
+
+SELECT * FROM public.ot_drafts
+ORDER BY created_at DESC;
+
+
+
+
+UPDATE public.derivatives_operations
+SET status = '{{this.params.status}}'
+WHERE case_id = '{{this.params.case_id}}';
+
+CREATE TABLE IF NOT EXISTS public.ot_drafts (
+  id             SERIAL PRIMARY KEY,
+  case_id        VARCHAR(50),
+  customer_name  VARCHAR(100),
+  customer_email VARCHAR(150),
+  draft_email    TEXT,
+  ot_records     TEXT,
+  created_at     TIMESTAMP DEFAULT NOW()
+);
+
+
+
+export default {
+  getData: () => {
+    return {
+      derivatives: fetch_derivatives_operations.data,
+      treasury:    fetch_treasury_documentation.data,
+      ot_drafts:   fetch_ot_drafts.data || []
+    };
+  }
+};
+
+
+
+
+
+
+
+
+
+
